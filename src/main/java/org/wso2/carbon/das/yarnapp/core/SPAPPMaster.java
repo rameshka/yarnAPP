@@ -31,6 +31,7 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.log4j.Logger;
 import org.wso2.carbon.das.jobmanager.core.model.SiddhiAppHolder;
+import org.wso2.carbon.das.yarnapp.core.exception.IllegalResourceRequest;
 import org.wso2.carbon.das.yarnapp.core.pojo.YarnContainer;
 import org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants;
 
@@ -85,35 +86,41 @@ public class SPAPPMaster {
     }
 
     public static void main(String[] args) {
-        ContainerId containerId =
-                ConverterUtils.toContainerId(System.getenv(ApplicationConstants.Environment.CONTAINER_ID.name()));
-
         SPAPPMaster spappMaster = new SPAPPMaster();
         try {
             spappMaster.init();
             spappMaster.run();
+
         } catch (IOException e) {
             LOG.error(e);
         } catch (YarnException e) {
-            LOG.error(e);
+            LOG.error("Unexpected YarnError while running SPAPPMaster: ",e);
         } catch (ClassNotFoundException e) {
-            e.printStackTrace();
+           LOG.error("Error while Serializing",e);
+        } catch (IllegalResourceRequest e) {
+            LOG.error("Illegal Resource Request to the Hadoop Cluster",e);
         }
     }
 
     /**
-     * Moving dis-integrated siddhi-Files in to HDFS
-     *
+     * Responsible for initializing SPAPPMaster
+     * Deserialize list of {@link SiddhiAppHolder} saved to the HDFS by <code>YarnClient</code>
+     * calculate container requirement depending on the SiddhiApps
+     * Write {@link SiddhiAppHolder} to one by one to the HDFS
      * @throws IOException
      */
     private void init() throws IOException, ClassNotFoundException {
-        conf.addResource(new Path("file:///usr/local/hadoop/etc/hadoop/core-site.xml")); // Replace with actual path
-        conf.addResource(new Path("file:///usr/local/hadoop/etc/hadoop/hdfs-site.xml"));
         appsToDeploy = deserializeSiddhiAppHolders();
         numContainers = findContainerRequirement(appsToDeploy);
         writeToHDFS(appsToDeploy);
     }
 
+    /**
+     * calculate max number of containers needed to deploy {@link SiddhiAppHolder}
+     * Max number of containers will be equal to the max parallel number of out the execGroups
+     * @param siddhiAppHolders
+     * @return
+     */
     private int findContainerRequirement(List<SiddhiAppHolder> siddhiAppHolders) {
         Map<String, Integer> execGroupParallelismMap = new HashMap<>();
         for (SiddhiAppHolder siddhiAppHolder : siddhiAppHolders) {
@@ -128,20 +135,26 @@ public class SPAPPMaster {
         return Collections.max(execGroupParallelismMap.values());
     }
 
-    public boolean run() throws IOException, YarnException {
+
+    public boolean run() throws IOException, YarnException, IllegalResourceRequest {
         LOG.info("Starting SPAPPMaster.....");
+        //callback handler to listen for ResourceManager events
         AMRMClientAsync.CallbackHandler allocListener = new RMCallbackHandler();
+        //encapsulate the YARN ResourceManager client in the ApplicationMaster
         resourceManager = AMRMClientAsync.createAMRMClientAsync(1000, allocListener);
+        //setting up configuration for ResourceManager
         resourceManager.init(conf);
         resourceManager.start();
 
-
+        //initializes Nodemanager callback handler
         containerListener = new NMCallbackHandler();
         nmClientAsync = new NMClientAsyncImpl(containerListener);
         nmClientAsync.init(conf);
         nmClientAsync.start();
 
         appMasterHostname = NetUtils.getHostname();
+
+        LOG.info("Registering SPAPPMaster with ResourceManager");
         RegisterApplicationMasterResponse applicationMasterResponse =
                 resourceManager.registerApplicationMaster(appMasterHostname, appMasterRpcPort, appMasterTrackingUrl);
 
@@ -160,8 +173,7 @@ public class SPAPPMaster {
             //if required memory is much greater than available then can wait till cluster get released - wait for
             // a certain time interval, but if the specified memory for yarn cluster is lower than the required then
             // waiting for freed memory can not be done.
-            LOG.info("Max memory capability of the cluster  and Assigned mismatch...\n");
-            // TODO: 11/26/17 throw exception to for Illegal resource request.
+            throw new IllegalResourceRequest("Max memory capability of the cluster  and Assigned mismatch");
         }
 
         LOG.info("Requesting Containers from Resource Manager");
@@ -211,7 +223,6 @@ public class SPAPPMaster {
     }
 
     private AMRMClient.ContainerRequest setupContainerAskFromRM() {
-        //TODO:resource requirements  depend on the user
         Priority pri = Records.newRecord(Priority.class);
         pri.setPriority(SP_PRIORITY_REQUIREMENT);
         Resource capability = Records.newRecord(Resource.class);
