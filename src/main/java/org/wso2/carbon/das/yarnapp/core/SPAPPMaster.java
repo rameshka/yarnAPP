@@ -2,14 +2,12 @@ package org.wso2.carbon.das.yarnapp.core;
 
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -32,14 +30,11 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.Cont
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.log4j.Logger;
-import org.wso2.carbon.das.jobmanager.core.appCreator.SiddhiQuery;
 import org.wso2.carbon.das.jobmanager.core.model.SiddhiAppHolder;
-import org.wso2.carbon.das.yarnapp.core.dto.YarnContainer;
+import org.wso2.carbon.das.yarnapp.core.pojo.YarnContainer;
 import org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants;
 
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
@@ -53,8 +48,11 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SIDDHIAPP_HOLDER_HDFS_PATH;
-import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SIDDHI_EXTENSION;
+import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SPAPP_MASTER;
+import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_DEPLOYER_CLASS;
+import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_LOCALIZED_NAME;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_PRIORITY_REQUIREMENT;
+import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_UNIZIPPED_BUNDLE_NAME;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_VCORE;
 
 /**
@@ -78,17 +76,17 @@ public class SPAPPMaster {
     private AtomicInteger completedContainers = new AtomicInteger();
     private List<YarnContainer> yarnContainers = new ArrayList<>();
     private List<SiddhiAppHolder> appsToDeploy;
-    private List<Thread> launchThreads;
+    private List<Thread> launchThreads = new ArrayList<>();
     private static final Logger LOG = Logger.getLogger(SPAPPMaster.class);
 
     public SPAPPMaster() {
+
         this.conf = new YarnConfiguration();
     }
 
     public static void main(String[] args) {
         ContainerId containerId =
                 ConverterUtils.toContainerId(System.getenv(ApplicationConstants.Environment.CONTAINER_ID.name()));
-        ApplicationAttemptId applicationAttemptId = containerId.getApplicationAttemptId();
 
         SPAPPMaster spappMaster = new SPAPPMaster();
         try {
@@ -109,9 +107,11 @@ public class SPAPPMaster {
      * @throws IOException
      */
     private void init() throws IOException, ClassNotFoundException {
+        conf.addResource(new Path("file:///usr/local/hadoop/etc/hadoop/core-site.xml")); // Replace with actual path
+        conf.addResource(new Path("file:///usr/local/hadoop/etc/hadoop/hdfs-site.xml"));
         appsToDeploy = deserializeSiddhiAppHolders();
         numContainers = findContainerRequirement(appsToDeploy);
-        writedToHDFS(appsToDeploy);
+        writeToHDFS(appsToDeploy);
     }
 
     private int findContainerRequirement(List<SiddhiAppHolder> siddhiAppHolders) {
@@ -222,37 +222,15 @@ public class SPAPPMaster {
         return request;
     }
 
-    // TODO: 11/15/17 after moving to HDFS we have to remove file from HDFS unless HDFS will be garbage collected
-    private void localizeSiddhiAPP(SiddhiQuery siddiQuery) throws IOException {
-        String siddhiAPPLocalFilePath =
-                SPAPPMasterConstants.SIDDHIAPP_LOCAL_FILE_PATH + "/" + siddiQuery.getAppName() + ".siddhi";
-        BufferedWriter bufferedWriter = null;
-        File file = new File(siddhiAPPLocalFilePath);
-        if (!file.exists()) {
-            file.createNewFile();
-        }
-        FileWriter fileWriter = new FileWriter(file);
-        bufferedWriter = new BufferedWriter(fileWriter);
-        bufferedWriter.write(siddiQuery.getApp());
-        bufferedWriter.close();
-        //moving to HDFS
+    private void writeToHDFS(List<SiddhiAppHolder> appsToDeploy) throws IOException {
         FileSystem fs = FileSystem.get(conf);
-        Path siddhiAPPFilePath = new Path(siddhiAPPLocalFilePath);
-        Path siddhiAPPFilePathDist = new Path(fs.getHomeDirectory(), siddiQuery.getAppName() + ".siddhi");
-        LOG.debug("Distributed Serialized file Yarn URL = " + siddhiAPPFilePathDist.toUri().toString());
-        LOG.info("Copy Serialized file from local filesystem and add to local environment");
-        fs.copyFromLocalFile(true, true, siddhiAPPFilePath, siddhiAPPFilePathDist);
-    }
-
-    private void writedToHDFS(List<SiddhiAppHolder> appsToDeploy) throws IOException {
-        FileSystem fs = FileSystem.get(conf);
-        for (SiddhiAppHolder siddhiAppHolder:appsToDeploy){
+        for (SiddhiAppHolder siddhiAppHolder : appsToDeploy) {
             String appPath = fs.getHomeDirectory() + File.separator + siddhiAppHolder.getParentAppName() + File
-                    .separator + siddhiAppHolder.getAppName() + SIDDHI_EXTENSION;
+                    .separator + siddhiAppHolder.getAppName() + ".ser";
             Path hdfsPath = new Path(appPath);
-            FSDataOutputStream outputStream=fs.create(hdfsPath);
-            outputStream.writeBytes(siddhiAppHolder.getSiddhiApp());
-            outputStream.close();
+            ObjectOutputStream oos = new ObjectOutputStream(fs.create(hdfsPath));
+            oos.writeObject(siddhiAppHolder);
+            oos.close();
         }
     }
 
@@ -266,8 +244,10 @@ public class SPAPPMaster {
         InputStream in = fs.open(new Path(hdfsPath));
 
         ObjectInputStream objReader = new ObjectInputStream(in);
+        List<SiddhiAppHolder> siddhiAppHolderList =( List<SiddhiAppHolder>) objReader.readObject();
+        objReader.close();
 
-        return (List<SiddhiAppHolder>) objReader.readObject();
+        return siddhiAppHolderList;
     }
 
     private class RMCallbackHandler implements AMRMClientAsync.CallbackHandler {
@@ -312,7 +292,7 @@ public class SPAPPMaster {
          */
         public void onContainersAllocated(List<Container> allocatedContainers) {
             for (Container allocatedContainer : allocatedContainers) {
-                yarnContainers.add(new YarnContainer(new ArrayList<>(), allocatedContainer));
+                yarnContainers.add(new YarnContainer(new HashMap<>(), allocatedContainer));
             }
             if (yarnContainers.size() == numContainers) {  //this value depending on the # of containers for the
                 //siddhiAPPS are added to the containers in a normal-distribution method
@@ -321,27 +301,24 @@ public class SPAPPMaster {
                 for (SiddhiAppHolder siddhiAppHolder : appsToDeploy) {
                     String execGroupName = siddhiAppHolder.getGroupName();
                     for (YarnContainer yarnContainer : yarnContainers) {
-                        if (yarnContainer.getExecGroupName().equals(execGroupName)) {
+                        if (yarnContainer.getSiddhiAppList().get(execGroupName) != null) {
                             continue;
                         } else {
-                            yarnContainer.setExecGroupName(execGroupName);
                             yarnContainer.setParentAPPName(siddhiAppHolder.getParentAppName());
-                            yarnContainer.addSiddhiAPPName(siddhiAppHolder.getAppName());
+                            yarnContainer.addSiddhiAPPName(execGroupName, siddhiAppHolder.getAppName());
                             break;
                         }
 
                     }
                 }
+                for (YarnContainer yarnContainer : yarnContainers) {
+                    LaunchContainerRunnable runnableLaunchContainer =
+                            new LaunchContainerRunnable(yarnContainer, containerListener);
+                    Thread launchThread = new Thread(runnableLaunchContainer);
+                    launchThreads.add(launchThread);
+                    launchThread.start();
+                }
             }
-
-            for (YarnContainer yarnContainer : yarnContainers) {
-                LaunchContainerRunnable runnableLaunchContainer =
-                        new LaunchContainerRunnable(yarnContainer, containerListener);
-                Thread launchThread = new Thread(runnableLaunchContainer);
-                launchThreads.add(launchThread);
-                launchThread.start();
-            }
-
         }
 
         public void onShutdownRequest() {
@@ -399,14 +376,13 @@ public class SPAPPMaster {
         public LaunchContainerRunnable(YarnContainer yarnContainer, NMCallbackHandler containerListener) {
             this.container = yarnContainer.getContainer();
             this.containerListener = containerListener;
-            this.siddhiAPPNameList = yarnContainer.getSiddhiAPPNameList();
+            this.siddhiAPPNameList = new ArrayList<>(yarnContainer.getSiddhiAppList().values());
             this.parentAPPName = yarnContainer.getParentAPPName();
         }
 
         public void run() {
-            String containerId = container.getId().toString();
             ContainerLaunchContext ctx = Records.newRecord(ContainerLaunchContext.class);
-            String classpath = "$CLASSPATH:./" + SPAPPMasterConstants.SP_LOCALIZED_NAME;
+            String classpath = "$CLASSPATH:./" + SP_LOCALIZED_NAME;
             Map<String, String> env = new HashMap<>();
             env.put("CLASSPATH", classpath);
             ctx.setEnvironment(env);
@@ -426,25 +402,22 @@ public class SPAPPMaster {
                 workerRsrc.setResource(ConverterUtils.getYarnUrlFromPath(workerDestination));
                 workerRsrc.setTimestamp(destStatus.getModificationTime());
                 workerRsrc.setSize(destStatus.getLen());
-                localResources.put(SPAPPMasterConstants.SP_LOCALIZED_NAME, workerRsrc);
+                localResources.put(SP_LOCALIZED_NAME, workerRsrc);
 
-                //localizing siddiAPP files
-                for (String siddhiAPPName : siddhiAPPNameList) {
-                    String siddhiAPPFileName = siddhiAPPName + SIDDHI_EXTENSION;
 
-                    String hdfsPath = fs.getHomeDirectory() + File.separator + parentAPPName +File.separator +
-                            siddhiAPPFileName;
+                Path siddhiAPPFile = new Path(fs.getHomeDirectory()
+                                                      + File.separator
+                                                      + SPAPP_MASTER);
 
-                    Path siddhiAPPFile = new Path(fs.getHomeDirectory() + siddhiAPPFileName);
-                    FileStatus siddhiAPPFileDist = fs.getFileStatus(siddhiAPPFile);
-                    LocalResource siddhiAPPFileRsrc = Records.newRecord(LocalResource.class);
-                    siddhiAPPFileRsrc.setType(LocalResourceType.FILE);
-                    siddhiAPPFileRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
-                    siddhiAPPFileRsrc.setResource(ConverterUtils.getYarnUrlFromPath(siddhiAPPFile));
-                    siddhiAPPFileRsrc.setTimestamp(siddhiAPPFileDist.getModificationTime());
-                    siddhiAPPFileRsrc.setSize(siddhiAPPFileDist.getLen());
-                    localResources.put(siddhiAPPFileName, siddhiAPPFileRsrc);
-                }
+                FileStatus siddhiAPPFileDist = fs.getFileStatus(siddhiAPPFile);
+                LocalResource siddhiAPPFileRsrc = Records.newRecord(LocalResource.class);
+                siddhiAPPFileRsrc.setType(LocalResourceType.FILE);
+                siddhiAPPFileRsrc.setVisibility(LocalResourceVisibility.APPLICATION);
+                siddhiAPPFileRsrc.setResource(ConverterUtils.getYarnUrlFromPath(siddhiAPPFile));
+                siddhiAPPFileRsrc.setTimestamp(siddhiAPPFileDist.getModificationTime());
+                siddhiAPPFileRsrc.setSize(siddhiAPPFileDist.getLen());
+                localResources.put(SPAPP_MASTER, siddhiAPPFileRsrc);
+                //   }
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -453,36 +426,66 @@ public class SPAPPMaster {
 
             ctx.setLocalResources(localResources);
 
-            String containerHome = conf.get("core.nodemanager.local-dirs")
+            String containerHome = conf.get("yarn.nodemanager.local-dirs")
                     + File.separator + ContainerLocalizer.USERCACHE
                     + File.separator
                     + System.getenv().get(ApplicationConstants.Environment.USER.toString())
                     + File.separator + ContainerLocalizer.APPCACHE
                     + File.separator + applicationId + File.separator
-                    + containerId;
+                    + container.getId().toString();
 
             List<String> commands = new ArrayList<>();
 
-            commands.add(" 1>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout" + " 2>>"
-                                 + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stderr ");
-            commands.add(" && ");
-            commands.add(" tar zxvf " + SPAPPMasterConstants.SP_LOCALIZED_NAME + " -C ./ ");
-            commands.add(" && ");
+            StringBuilder classPathEnv = new StringBuilder("");
+            for (String c : conf.getStrings(YarnConfiguration.YARN_APPLICATION_CLASSPATH,
+                                            YarnConfiguration.DEFAULT_YARN_APPLICATION_CLASSPATH)) {
+                classPathEnv.append(c.trim());
+                classPathEnv.append(File.pathSeparatorChar);
+            }
 
 
-            commands.add(ApplicationConstants.Environment.JAVA_HOME.$()
-                                 + "/bin/java -cp /usr/local/hadoop/share/hadoop/common/lib/*" + File.pathSeparator
-                                 + containerHome + "/SiddhiMaster.jar " + "com.wso2.SiddhiConfiguration "
-                                 + " 1>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout" +
-                                 " 2>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stderr ");
+            String containerLaunchSiddhiAppNameList = containerLaunchAppList(siddhiAPPNameList);
+
+            commands.add(" tar zxvf " + SP_LOCALIZED_NAME + " -C ./ ");
+            commands.add(" && ");
+
+            commands.add(ApplicationConstants.Environment.JAVA_HOME.$() + "/bin/java -cp "
+                                 + containerHome
+                                 + File.separator
+                                 + SPAPP_MASTER
+                                 + File.pathSeparator
+                                 + classPathEnv.toString()
+                                 + " "
+                                 + SP_DEPLOYER_CLASS
+                                 + " "
+                                 + containerHome
+                                 + File.separator
+                                 + SP_UNIZIPPED_BUNDLE_NAME
+                                 + " "
+                                 + parentAPPName
+                                 + " "
+                                 + containerLaunchSiddhiAppNameList
+                                 + " && "
+                                  +  String.format("%s%s%s%sbin%sworker.sh",containerHome,File.separator,
+                                                 SP_UNIZIPPED_BUNDLE_NAME, File.separator, File.separator)
+                                 + " 1>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout"
+                                 + " 2>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stderr ");
 
             ctx.setCommands(commands);
-
             nmClientAsync.startContainerAsync(container, ctx);
 
 
         }
 
+    }
+
+    private String containerLaunchAppList(List<String> appNameList) {
+        StringBuilder stringBuilder = new StringBuilder(" ");
+        for (String s : appNameList) {
+            LOG.info(s);
+            stringBuilder.append(s).append(" ");
+        }
+        return stringBuilder.toString();
     }
 
 }
