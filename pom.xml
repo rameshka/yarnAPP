@@ -44,12 +44,14 @@
     <dependency>
       <groupId>org.wso2.carbon.analytics</groupId>
       <artifactId>org.wso2.carbon.das.jobmanager.core</artifactId>
-      <version>2.0.151-SNAPSHOT</version>
+      <version>${jobmanager.core.version}</version>
     </dependency>
   </dependencies>
+
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
     <hadoop.yarn.api.version>2.7.3</hadoop.yarn.api.version>
+    <jobmanager.core.version>2.0.151-SNAPSHOT</jobmanager.core.version>
   </properties>
 </project>
