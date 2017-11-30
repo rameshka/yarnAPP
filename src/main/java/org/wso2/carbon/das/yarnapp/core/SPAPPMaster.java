@@ -51,9 +51,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SIDDHIAPP_HOLDER_HDFS_PATH;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SPAPP_MASTER;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_DEPLOYER_CLASS;
-import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_LOCALIZED_NAME;
+import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_HDFS_NAME;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_PRIORITY_REQUIREMENT;
-import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_UNIZIPPED_BUNDLE_NAME;
 import static org.wso2.carbon.das.yarnapp.core.utils.SPAPPMasterConstants.SP_VCORE;
 
 /**
@@ -79,14 +78,16 @@ public class SPAPPMaster {
     private List<SiddhiAppHolder> appsToDeploy;
     private List<Thread> launchThreads = new ArrayList<>();
     private static final Logger LOG = Logger.getLogger(SPAPPMaster.class);
+    private String spUnzippedBundleName;
 
     public SPAPPMaster() {
 
         this.conf = new YarnConfiguration();
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IllegalResourceRequest {
         SPAPPMaster spappMaster = new SPAPPMaster();
+        spappMaster.setSpUnzippedBundleName(args[0]);
         try {
             spappMaster.init();
             spappMaster.run();
@@ -97,9 +98,11 @@ public class SPAPPMaster {
             LOG.error("Unexpected YarnError while running SPAPPMaster: ",e);
         } catch (ClassNotFoundException e) {
            LOG.error("Error while Serializing",e);
-        } catch (IllegalResourceRequest e) {
-            LOG.error("Illegal Resource Request to the Hadoop Cluster",e);
         }
+    }
+
+    public void setSpUnzippedBundleName(String spUnzippedBundleName) {
+        this.spUnzippedBundleName = spUnzippedBundleName;
     }
 
     /**
@@ -169,7 +172,7 @@ public class SPAPPMaster {
 
         int requiredContainerMemory = SPAPPMasterConstants.CONTAINER_MEMORY * numContainers;
 
-        if (requiredContainerMemory < maxMemoryCluster) {
+        if (requiredContainerMemory > maxMemoryCluster) {
             //if required memory is much greater than available then can wait till cluster get released - wait for
             // a certain time interval, but if the specified memory for yarn cluster is lower than the required then
             // waiting for freed memory can not be done.
@@ -298,7 +301,6 @@ public class SPAPPMaster {
 
         /**
          * Distribution of SiddhiApps among available Resources starts here.
-         *
          * @param allocatedContainers
          */
         public void onContainersAllocated(List<Container> allocatedContainers) {
@@ -393,7 +395,7 @@ public class SPAPPMaster {
 
         public void run() {
             ContainerLaunchContext ctx = Records.newRecord(ContainerLaunchContext.class);
-            String classpath = "$CLASSPATH:./" + SP_LOCALIZED_NAME;
+            String classpath = "$CLASSPATH:./" + SP_HDFS_NAME;
             Map<String, String> env = new HashMap<>();
             env.put("CLASSPATH", classpath);
             ctx.setEnvironment(env);
@@ -413,7 +415,7 @@ public class SPAPPMaster {
                 workerRsrc.setResource(ConverterUtils.getYarnUrlFromPath(workerDestination));
                 workerRsrc.setTimestamp(destStatus.getModificationTime());
                 workerRsrc.setSize(destStatus.getLen());
-                localResources.put(SP_LOCALIZED_NAME, workerRsrc);
+                localResources.put(SP_HDFS_NAME, workerRsrc);
 
 
                 Path siddhiAPPFile = new Path(fs.getHomeDirectory()
@@ -457,7 +459,7 @@ public class SPAPPMaster {
 
             String containerLaunchSiddhiAppNameList = containerLaunchAppList(siddhiAPPNameList);
 
-            commands.add(" tar zxvf " + SP_LOCALIZED_NAME + " -C ./ ");
+            commands.add(" tar zxvf " + SP_HDFS_NAME + " -C ./ ");
             commands.add(" && ");
 
             commands.add(ApplicationConstants.Environment.JAVA_HOME.$() + "/bin/java -cp "
@@ -471,14 +473,14 @@ public class SPAPPMaster {
                                  + " "
                                  + containerHome
                                  + File.separator
-                                 + SP_UNIZIPPED_BUNDLE_NAME
+                                 + spUnzippedBundleName
                                  + " "
                                  + parentAPPName
                                  + " "
                                  + containerLaunchSiddhiAppNameList
                                  + " && "
                                   +  String.format("%s%s%s%sbin%sworker.sh",containerHome,File.separator,
-                                                 SP_UNIZIPPED_BUNDLE_NAME, File.separator, File.separator)
+                                                 spUnzippedBundleName, File.separator, File.separator)
                                  + " 1>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stdout"
                                  + " 2>>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/stderr ");
 
